@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>한국 전력수급 대시보드</title>
+<style>
+  :root {
+    --bg: #f3f6f9; --card: #ffffff; --ink: #0b3a5d; --text: #1f2d3a; --muted: #5b6b7a;
+    --line: #d8e0e7; --accent: #2a7f86; --accent-soft: #dbeef0; --warn: #c2571a;
+    --code-bg: #0b3a5d; --code-ink: #e8f1f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1720; --card: #16212c; --ink: #dbe9f5; --text: #e3ebf2; --muted: #9fb0bf;
+      --line: #2a3a49; --accent: #4fb3bb; --accent-soft: #1d3a40; --warn: #f0935a;
+      --code-bg: #0a121a; --code-ink: #e8f1f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  header, main, footer { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 28px; padding-bottom: 8px; }
+  h1 { margin: 0 0 4px; font-size: 24px; color: var(--ink); }
+  h2 { margin: 0 0 4px; font-size: 16px; color: var(--ink); }
+  .sub { color: var(--muted); margin: 0; }
+  .status { margin: 10px 0 0; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); }
+  .status.error { background: #fde8e0; color: #8a2b0c; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .kpi .label { color: var(--muted); font-size: 13px; }
+  .kpi .value { font-size: 26px; font-weight: 700; color: var(--ink); margin-top: 2px; }
+  .kpi .note { color: var(--muted); font-size: 12.5px; }
+  .up { color: var(--warn); } .down { color: var(--accent); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .wide { grid-column: 1 / -1; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  .desc { color: var(--muted); font-size: 13px; margin: 0; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: var(--muted); padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .chart { width: 100%; height: 340px; }
+  textarea { width: 100%; min-height: 150px; resize: vertical; border: 0; border-radius: 8px; padding: 12px;
+             background: var(--code-bg); color: var(--code-ink); font: 13.5px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .run { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 7px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  select { background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
+  .tablewrap { overflow: auto; max-height: 320px; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--accent-soft); color: var(--ink); text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .err { color: var(--warn); white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .schema { color: var(--muted); font-size: 12.5px; margin: 0; }
+  footer { padding-top: 16px; padding-bottom: 36px; color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .grid { grid-template-columns: 1fr; }
+    .kpi .value { font-size: 22px; }
+    .chart { height: 300px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>한국 전력수급 대시보드</h1>
+  <p class="sub">일별 전력수급실적(매일 갱신) + 월별 연료원별 전력거래량(매월 갱신). 계산은 이 브라우저 안에서 DuckDB가 합니다.</p>
+  <p id="status" class="status">DuckDB 엔진을 내려받는 중…</p>
+</header>
+
+<main>
+  <section class="kpis" id="kpis"></section>
+
+  <section class="grid">
+    <div class="card wide">
+      <div class="head">
+        <div>
+          <h2>일별 최대전력과 공급능력</h2>
+          <p class="desc">최대전력 = 그날 가장 전기를 많이 쓴 순간 / 공급능력 = 그날 공급할 수 있는 최대치. 점선은 최대전력의 7일 이동평균.</p>
+        </div>
+        <div class="seg" id="seg-daily">
+          <button data-v="30">30일</button><button data-v="90">90일</button>
+          <button data-v="365" class="on">1년</button><button data-v="99999">전체</button>
+        </div>
+      </div>
+      <div id="c-daily" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>월별 평균 최대전력, 연도별 비교</h2>
+      <p class="desc">같은 달끼리 겹쳐 보면 여름·겨울 피크와 해마다의 증감이 보입니다.</p>
+      <div id="c-year" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>공급예비율</h2>
+      <p class="desc">(공급능력 − 최대전력) ÷ 최대전력. 낮을수록 여유가 적습니다. 최근 1년, 일별.</p>
+      <div id="c-reserve" class="chart"></div>
+    </div>
+
+    <div class="card wide">
+      <div class="head">
+        <div>
+          <h2>월별 에너지 믹스 (연료원별 전력거래량)</h2>
+          <p class="desc">전력시장 + PPA 거래량. 매월 말 한 달 전 실적이 갱신됩니다.</p>
+        </div>
+        <div class="row" style="margin:0">
+          <div class="seg" id="seg-mixmode">
+            <button data-v="" class="on">GWh</button><button data-v="percent">비중(%)</button>
+          </div>
+          <div class="seg" id="seg-mixrange">
+            <button data-v="35">3년</button><button data-v="119" class="on">10년</button><button data-v="9999">전체</button>
+          </div>
+        </div>
+      </div>
+      <div id="c-mix" class="chart" style="height:380px"></div>
+    </div>
+
+    <div class="card wide">
+      <h2>두 데이터 연결: 월평균 최대전력 × 신재생 비중</h2>
+      <p class="desc">주기가 다른 두 표(일별 · 월별)를 월 단위로 묶어(JOIN) 한 그래프에 그렸습니다. 최근 5년.</p>
+      <div id="c-join" class="chart"></div>
+    </div>
+
+    <div class="card wide">
+      <h2>직접 SQL 써보기</h2>
+      <p class="schema">표 <b>daily</b>: date, capacity_mw, supply_mw, peak_mw, min_mw, reserve_mw, reserve_pct, peak_hour, min_hour
+        &nbsp;|&nbsp; 표 <b>monthly</b>: month, fuel, gwh &nbsp;(Ctrl/⌘ + Enter로 실행)</p>
+      <div class="row">
+        <select id="presets"></select>
+        <button class="run" id="run">실행</button>
+        <span id="runinfo" class="schema"></span>
+      </div>
+      <textarea id="sql" spellcheck="false"></textarea>
+      <div id="result" style="margin-top:8px"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div id="meta"></div>
+  출처: 한국전력거래소 전력통계정보시스템(EPSIS) 전력수급실적(일별), 전력거래량 연료원별(월별, 전력시장+PPA).
+  원자료는 확정 전까지 바뀔 수 있으며, 비중은 전력시장+PPA 거래량 합계 대비입니다.
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<script type="module">
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+
+const $ = (s) => document.querySelector(s);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (n, d = 0) => Number(n).toLocaleString("ko-KR", { maximumFractionDigits: d, minimumFractionDigits: d });
+const FUEL_ORDER = ["원자력", "석탄", "LNG", "유류", "양수", "신재생", "기타", "PPA(태양광)"];
+const FUEL_COLOR = { "원자력": "#8e6bbf", "석탄": "#7c8591", "LNG": "#e08a2b", "유류": "#b5651d",
+                     "양수": "#5aa0c8", "신재생": "#3a9d6b", "기타": "#c9b458", "PPA(태양광)": "#2a7f86" };
+
+let conn;
+const state = { dailyDays: 365, mixMode: "", mixMonths: 119 };
+
+// ---------- DuckDB ----------
+async function boot() {
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const workerUrl = URL.createObjectURL(new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }));
+  const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(workerUrl));
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  URL.revokeObjectURL(workerUrl);
+  conn = await db.connect();
+  setStatus("데이터(Parquet)를 내려받는 중…");
+  for (const [view, file] of [["daily", "daily_supply"], ["monthly", "monthly_fuel"]]) {
+    const res = await fetch(`data/${file}.parquet`, { cache: "no-cache" });
+    if (!res.ok) throw new Error(`${file}.parquet 을 받지 못했습니다 (${res.status})`);
+    await db.registerFileBuffer(`${file}.parquet`, new Uint8Array(await res.arrayBuffer()));
+    await conn.query(`CREATE OR REPLACE VIEW ${view} AS SELECT * FROM read_parquet('${file}.parquet')`);
+  }
+}
+
+// 결과를 JS 객체 배열로. DuckDB는 정수를 BigInt로 돌려주므로 숫자로 바꿔 준다.
+async function q(sql) {
+  const table = await conn.query(sql);
+  const cols = table.schema.fields.map((f) => ({ name: f.name, type: String(f.type) }));
+  const rows = table.toArray().map((r) => {
+    const o = r.toJSON();
+    for (const k in o) if (typeof o[k] === "bigint") o[k] = Number(o[k]);
+    return o;
+  });
+  return { cols, rows };
+}
+const rows = async (sql) => (await q(sql)).rows;
+
+function setStatus(msg, error = false) {
+  const el = $("#status");
+  el.textContent = msg; el.classList.toggle("error", error);
+  el.style.display = msg ? "" : "none";
+}
+
+// ---------- 차트 공통 ----------
+const baseLayout = (extra = {}) => ({
+  paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+  font: { color: css("--text"), family: 'system-ui, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif', size: 12 },
+  margin: { l: 58, r: 16, t: 8, b: 44 },
+  xaxis: { gridcolor: css("--line"), automargin: true },
+  yaxis: { gridcolor: css("--line"), automargin: true },
+  legend: { orientation: "h", y: -0.22 },
+  hovermode: "x unified",
+  ...extra,
+});
+const plot = (id, data, layout) => Plotly.react(id, data, layout, { responsive: true, displayModeBar: false });
+
+// ---------- KPI ----------
+async function renderKpis() {
+  const [last] = await rows(`SELECT strftime(date,'%Y-%m-%d') AS d, CAST(peak_mw AS DOUBLE) AS peak, CAST(reserve_pct AS DOUBLE) AS rsv, peak_hour AS hr
+                             FROM daily ORDER BY date DESC LIMIT 1`);
+  const [yoy] = await rows(`WITH m AS (SELECT max(date) AS mx FROM daily)
+    SELECT avg(peak_mw) FILTER (WHERE date > mx - INTERVAL 30 DAY) AS cur,
+           avg(peak_mw) FILTER (WHERE date > mx - INTERVAL 395 DAY AND date <= mx - INTERVAL 365 DAY) AS prev
+    FROM daily, m`);
+  const [mix] = await rows(`WITH m AS (SELECT max(month) AS mx FROM monthly)
+    SELECT strftime(mx,'%Y년 %m월') AS ym,
+           100 * sum(gwh) FILTER (WHERE fuel='신재생') / sum(gwh) AS re,
+           100 * sum(gwh) FILTER (WHERE fuel='원자력') / sum(gwh) AS nu
+    FROM monthly, m WHERE month = mx GROUP BY mx`);
+  const diff = yoy.prev ? (yoy.cur / yoy.prev - 1) * 100 : null;
+  const cards = [
+    ["최근일 최대전력", `${fmt(last.peak / 1000, 1)} GW`, `${last.d} · ${last.hr}시`],
+    ["공급예비율", `${fmt(last.rsv, 1)} %`, `${last.d} 기준`],
+    ["최근 30일 평균 최대전력", `${fmt(yoy.cur / 1000, 1)} GW`,
+      diff === null ? "전년 비교 자료 없음" : `<span class="${diff > 0 ? "up" : "down"}">전년 동기 대비 ${diff > 0 ? "+" : ""}${fmt(diff, 1)}%</span>`],
+    [`${mix.ym} 신재생 비중`, `${fmt(mix.re, 1)} %`, `원자력 ${fmt(mix.nu, 1)} %`],
+  ];
+  $("#kpis").innerHTML = cards.map(([l, v, n]) =>
+    `<div class="card kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="note">${n}</div></div>`).join("");
+}
+
+// ---------- 차트 ----------
+async function renderDaily() {
+  const r = await rows(`SELECT * FROM (
+      SELECT strftime(date,'%Y-%m-%d') AS d, date, CAST(peak_mw AS DOUBLE) AS peak, CAST(supply_mw AS DOUBLE) AS supply,
+             avg(peak_mw) OVER (ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS ma7
+      FROM daily) t
+    WHERE date > (SELECT max(date) FROM daily) - INTERVAL ${state.dailyDays} DAY ORDER BY date`);
+  const x = r.map((v) => v.d);
+  plot("c-daily", [
+    { x, y: r.map((v) => v.supply), name: "공급능력", mode: "lines", line: { color: css("--muted"), width: 1.5 } },
+    { x, y: r.map((v) => v.peak), name: "최대전력", mode: "lines", line: { color: css("--accent"), width: 2 } },
+    { x, y: r.map((v) => v.ma7), name: "7일 이동평균", mode: "lines", line: { color: "#e08a2b", width: 1.5, dash: "dot" } },
+  ], baseLayout({ yaxis: { title: "MW", gridcolor: css("--line") } }));
+}
+
+async function renderYear() {
+  const r = await rows(`SELECT CAST(year(date) AS INTEGER) AS y, CAST(month(date) AS INTEGER) AS m, avg(peak_mw) AS v
+                        FROM daily GROUP BY 1, 2 ORDER BY 1, 2`);
+  const years = [...new Set(r.map((v) => v.y))];
+  const last = years[years.length - 1];
+  const palette = ["#9bb7c9", "#6fa3c4", "#3f89b3", "#e08a2b", css("--accent"), "#8e6bbf"];
+  const data = years.map((y, i) => ({
+    x: r.filter((v) => v.y === y).map((v) => v.m), y: r.filter((v) => v.y === y).map((v) => v.v),
+    name: String(y), mode: "lines+markers",
+    line: { color: y === last ? css("--accent") : palette[i % palette.length], width: y === last ? 3 : 1.5 },
+    marker: { size: y === last ? 6 : 3 },
+  }));
+  plot("c-year", data, baseLayout({
+    xaxis: { title: "월", dtick: 1, gridcolor: css("--line") },
+    yaxis: { title: "MW (월평균 최대전력)", gridcolor: css("--line") },
+  }));
+}
+
+async function renderReserve() {
+  const r = await rows(`SELECT strftime(date,'%Y-%m-%d') AS d, CAST(reserve_pct AS DOUBLE) AS v FROM daily
+                        WHERE date > (SELECT max(date) FROM daily) - INTERVAL 365 DAY ORDER BY date`);
+  plot("c-reserve", [{ x: r.map((v) => v.d), y: r.map((v) => v.v), type: "bar", name: "공급예비율",
+                       marker: { color: css("--accent") } }],
+       baseLayout({ yaxis: { title: "%", gridcolor: css("--line") }, showlegend: false }));
+}
+
+async function renderMix() {
+  const r = await rows(`SELECT strftime(month,'%Y-%m') AS ym, fuel, CAST(gwh AS DOUBLE) AS gwh FROM monthly
+                        WHERE month > (SELECT max(month) FROM monthly) - INTERVAL ${state.mixMonths} MONTH ORDER BY 1`);
+  const fuels = FUEL_ORDER.filter((f) => r.some((v) => v.fuel === f));
+  const data = fuels.map((f) => ({
+    x: r.filter((v) => v.fuel === f).map((v) => v.ym), y: r.filter((v) => v.fuel === f).map((v) => v.gwh),
+    name: f, type: "bar", marker: { color: FUEL_COLOR[f] },
+  }));
+  plot("c-mix", data, baseLayout({
+    barmode: "stack", barnorm: state.mixMode,
+    xaxis: { type: "category", nticks: 12, gridcolor: css("--line") },
+    yaxis: { title: state.mixMode ? "%" : "GWh", gridcolor: css("--line") },
+  }));
+}
+
+async function renderJoin() {
+  const r = await rows(`
+    WITH d AS (SELECT date_trunc('month', date) AS m, avg(peak_mw) AS avg_peak FROM daily GROUP BY 1),
+         f AS (SELECT month AS m, 100 * sum(gwh) FILTER (WHERE fuel = '신재생') / sum(gwh) AS re_pct FROM monthly GROUP BY 1)
+    SELECT strftime(d.m, '%Y-%m') AS ym, CAST(d.avg_peak AS DOUBLE) AS avg_peak, CAST(f.re_pct AS DOUBLE) AS re_pct
+    FROM d JOIN f USING (m)
+    WHERE d.m > (SELECT max(m) FROM f) - INTERVAL 60 MONTH ORDER BY 1`);
+  const x = r.map((v) => v.ym);
+  plot("c-join", [
+    { x, y: r.map((v) => v.avg_peak), name: "월평균 최대전력 (MW)", type: "bar", marker: { color: "#8cc7cc" } },
+    { x, y: r.map((v) => v.re_pct), name: "신재생 비중 (%)", type: "scatter", mode: "lines+markers", yaxis: "y2",
+      line: { color: "#3a9d6b", width: 2.5 } },
+  ], baseLayout({
+    xaxis: { type: "category", nticks: 12, gridcolor: css("--line") },
+    yaxis: { title: "MW", gridcolor: css("--line") },
+    yaxis2: { title: "%", overlaying: "y", side: "right", showgrid: false, rangemode: "tozero" },
+  }));
+}
+
+// ---------- SQL 실습창 ----------
+const PRESETS = {
+  "연도별 평균 최대전력": `SELECT year(date) AS 연도, round(avg(peak_mw)) AS 평균_최대전력_MW, max(peak_mw) AS 최고_MW
+FROM daily
+GROUP BY 1
+ORDER BY 1`,
+  "역대 최대전력 TOP 10": `SELECT strftime(date, '%Y-%m-%d') AS 날짜, peak_mw, peak_hour AS 시, reserve_pct
+FROM daily
+ORDER BY peak_mw DESC
+LIMIT 10`,
+  "공급예비율 10% 미만이었던 날": `SELECT strftime(date, '%Y-%m-%d') AS 날짜, peak_mw, supply_mw, reserve_pct
+FROM daily
+WHERE reserve_pct < 10
+ORDER BY date`,
+  "최대전력이 나타나는 시각 분포": `SELECT peak_hour AS 시, count(*) AS 일수
+FROM daily
+GROUP BY 1
+ORDER BY 1`,
+  "연도별 연료원 비중(%)": `SELECT year(month) AS 연도, fuel AS 연료원,
+       round(100 * sum(gwh) / sum(sum(gwh)) OVER (PARTITION BY year(month)), 1) AS 비중
+FROM monthly
+WHERE year(month) >= 2020
+GROUP BY 1, 2
+ORDER BY 1, 3 DESC`,
+  "월별 평균 최대전력 + LNG 거래량 (JOIN)": `SELECT strftime(d.m, '%Y-%m') AS 월, round(d.avg_peak) AS 평균_최대전력_MW, round(f.lng) AS LNG_GWh
+FROM (SELECT date_trunc('month', date) AS m, avg(peak_mw) AS avg_peak FROM daily GROUP BY 1) d
+JOIN (SELECT month AS m, sum(gwh) AS lng FROM monthly WHERE fuel = 'LNG' GROUP BY 1) f USING (m)
+ORDER BY 1 DESC
+LIMIT 24`,
+};
+
+function cell(v, type) {
+  if (v === null || v === undefined) return "";
+  if (/^(Date|Timestamp)/.test(type)) {
+    const t = v instanceof Date ? v : new Date(Number(v));
+    return t.toISOString().slice(0, 10);
+  }
+  // 연도(2022)에 천 단위 쉼표가 붙지 않도록 5자리 이상 정수에만 쉼표를 쓴다
+  if (typeof v === "number") return Number.isInteger(v) ? (Math.abs(v) >= 10000 ? v.toLocaleString("ko-KR") : String(v)) : v.toLocaleString("ko-KR", { maximumFractionDigits: 2 });
+  return String(v);
+}
+
+async function runSql() {
+  const sql = $("#sql").value.trim();
+  if (!sql) return;
+  const t0 = performance.now();
+  try {
+    const { cols, rows: rs } = await q(sql);
+    const shown = rs.slice(0, 500);
+    $("#result").innerHTML = `<div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th>${c.name}</th>`).join("")}</tr></thead><tbody>${
+      shown.map((r) => `<tr>${cols.map((c) => `<td>${cell(r[c.name], c.type)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    $("#runinfo").textContent = `${rs.length.toLocaleString()}행 · ${Math.round(performance.now() - t0)}ms` + (rs.length > 500 ? " (앞 500행만 표시)" : "");
+  } catch (e) {
+    $("#result").innerHTML = `<div class="err"></div>`;
+    $("#result .err").textContent = String(e.message || e);
+    $("#runinfo").textContent = "";
+  }
+}
+
+function setupSql() {
+  $("#presets").innerHTML = Object.keys(PRESETS).map((k) => `<option>${k}</option>`).join("");
+  const load = () => { $("#sql").value = PRESETS[$("#presets").value]; };
+  $("#presets").addEventListener("change", () => { load(); runSql(); });
+  $("#run").addEventListener("click", runSql);
+  $("#sql").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(); } });
+  load(); runSql();
+}
+
+// ---------- 컨트롤 ----------
+function seg(id, onPick) {
+  $(id).addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    $(id).querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+    onPick(b.dataset.v);
+  });
+}
+
+async function renderAll() {
+  await Promise.all([renderKpis(), renderDaily(), renderYear(), renderReserve(), renderMix(), renderJoin()]);
+}
+
+async function showMeta() {
+  try {
+    const m = await (await fetch("data/meta.json", { cache: "no-cache" })).json();
+    $("#meta").textContent = `데이터 수집: ${m.updated_at?.replace("T", " ").slice(0, 16)} · 일별 ${m.daily_last}까지 · 월별 ${m.monthly_last?.slice(0, 7)}까지`;
+  } catch { /* meta.json이 없어도 대시보드는 동작 */ }
+}
+
+try {
+  await boot();
+  setStatus("");
+  seg("#seg-daily", (v) => { state.dailyDays = +v; renderDaily(); });
+  seg("#seg-mixmode", (v) => { state.mixMode = v; renderMix(); });
+  seg("#seg-mixrange", (v) => { state.mixMonths = +v; renderMix(); });
+  setupSql();
+  await renderAll();
+  showMeta();
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderAll);
+} catch (e) {
+  console.error(e);
+  setStatus(`불러오지 못했습니다: ${e.message || e}`, true);
+}
+</script>
+</body>
+</html>

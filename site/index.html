@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>한국 전력수급 대시보드</title>
+<style>
+  :root {
+    --bg: #f3f6f9; --card: #ffffff; --ink: #0b3a5d; --text: #1f2d3a; --muted: #5b6b7a;
+    --line: #d8e0e7; --accent: #2a7f86; --accent-soft: #dbeef0; --warn: #c2571a;
+    --code-bg: #0b3a5d; --code-ink: #e8f1f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1720; --card: #16212c; --ink: #dbe9f5; --text: #e3ebf2; --muted: #9fb0bf;
+      --line: #2a3a49; --accent: #4fb3bb; --accent-soft: #1d3a40; --warn: #f0935a;
+      --code-bg: #0a121a; --code-ink: #e8f1f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  header, main, footer { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+  header { padding-top: 28px; padding-bottom: 8px; }
+  h1 { margin: 0 0 4px; font-size: 24px; color: var(--ink); }
+  h2 { margin: 0 0 4px; font-size: 16px; color: var(--ink); }
+  .sub { color: var(--muted); margin: 0; }
+  .status { margin: 10px 0 0; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); color: var(--ink); }
+  .status.error { background: #fde8e0; color: #8a2b0c; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .kpi .label { color: var(--muted); font-size: 13px; }
+  .kpi .value { font-size: 26px; font-weight: 700; color: var(--ink); margin-top: 2px; }
+  .kpi .note { color: var(--muted); font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .wide { grid-column: 1 / -1; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+  .desc { color: var(--muted); font-size: 13px; margin: 0; }
+  .chart { width: 100%; height: 340px; }
+  textarea { width: 100%; min-height: 150px; resize: vertical; border: 0; border-radius: 8px; padding: 12px;
+             background: var(--code-bg); color: var(--code-ink); font: 13.5px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .run { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 7px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  select { background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
+  .tablewrap { overflow: auto; max-height: 320px; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 5px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--accent-soft); color: var(--ink); text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .err { color: var(--warn); white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .schema { color: var(--muted); font-size: 12.5px; margin: 0; }
+  footer { padding-top: 16px; padding-bottom: 36px; color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 760px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .grid { grid-template-columns: 1fr; }
+    .kpi .value { font-size: 22px; }
+    .chart { height: 300px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>한국 전력수급 대시보드</h1>
+  <p class="sub">공공데이터포털 API로 받은 5분 단위 전력수급을 매일 쌓아 만든 대시보드입니다. 계산은 이 브라우저 안에서 DuckDB가 합니다.</p>
+  <p id="status" class="status">DuckDB 엔진을 내려받는 중…</p>
+</header>
+
+<main id="main" hidden>
+  <section class="kpis" id="kpis"></section>
+
+  <section class="grid">
+    <div class="card wide">
+      <div class="head">
+        <div>
+          <h2>하루의 전력수급 곡선 (5분 단위)</h2>
+          <p class="desc">현재수요 = 지금 쓰고 있는 전력 / 공급능력 = 공급할 수 있는 최대치 / 최대예측수요 = 그날 예상한 최대 수요.</p>
+        </div>
+        <label class="desc">날짜 <select id="day"></select></label>
+      </div>
+      <div id="c-day" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>일별 최대수요와 최저 공급예비율</h2>
+      <p class="desc">막대 = 그날의 최대수요, 선 = 그날의 가장 낮은 공급예비율. 연한 막대는 하루치가 다 모이지 않은 날입니다.</p>
+      <div id="c-daily" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <h2>시간대별 수요</h2>
+      <p class="desc">모인 모든 날의 시(0~23시)별 평균과 최대·최소. 하루 중 언제 전기를 많이 쓰는지 보입니다.</p>
+      <div id="c-hour" class="chart"></div>
+    </div>
+
+    <div class="card wide">
+      <h2>직접 SQL 써보기</h2>
+      <p class="schema">표 <b>supply</b>: ts(시각), demand_mw(현재수요), supply_mw(공급능력), forecast_mw(최대예측수요),
+        reserve_mw(공급예비력), reserve_pct(공급예비율 %), oper_reserve_mw(운영예비력), oper_reserve_pct(운영예비율 %)
+        &nbsp;(Ctrl/⌘ + Enter로 실행)</p>
+      <div class="row">
+        <select id="presets"></select>
+        <button class="run" id="run">실행</button>
+        <span id="runinfo" class="schema"></span>
+      </div>
+      <textarea id="sql" spellcheck="false"></textarea>
+      <div id="result" style="margin-top:8px"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div id="meta"></div>
+  출처: 한국전력거래소 「오늘전력수급현황조회」(공공데이터포털 OpenAPI, 이용허락범위 제한 없음). 수요·공급능력·예비력의 단위는 MW입니다.
+  API는 '오늘' 하루치만 제공하므로 매일 받아서 쌓은 기간만 표시됩니다.
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<script type="module">
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm";
+
+const $ = (s) => document.querySelector(s);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (n, d = 0) => Number.isFinite(Number(n)) && n !== null
+  ? Number(n).toLocaleString("ko-KR", { maximumFractionDigits: d, minimumFractionDigits: d }) : "-";
+const FULL_DAY_ROWS = 270;     // 이 행 수 이상이면 하루치가 거의 다 모인 날로 본다 (5분 × 288)
+
+let conn;
+const state = { day: null };
+
+// ---------- DuckDB ----------
+async function boot() {
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const workerUrl = URL.createObjectURL(new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }));
+  const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(workerUrl));
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+  URL.revokeObjectURL(workerUrl);
+  conn = await db.connect();
+  setStatus("데이터(Parquet)를 내려받는 중…");
+  const res = await fetch("data/supply_5min.parquet", { cache: "no-cache" });
+  if (res.status === 404) return false;
+  if (!res.ok) throw new Error(`supply_5min.parquet 을 받지 못했습니다 (${res.status})`);
+  await db.registerFileBuffer("supply_5min.parquet", new Uint8Array(await res.arrayBuffer()));
+  await conn.query(`CREATE OR REPLACE VIEW supply AS SELECT * FROM read_parquet('supply_5min.parquet')`);
+  return true;
+}
+
+// 결과를 JS 객체 배열로. DuckDB는 정수를 BigInt로 돌려주므로 숫자로 바꿔 준다.
+async function q(sql) {
+  const table = await conn.query(sql);
+  const cols = table.schema.fields.map((f) => ({ name: f.name, type: String(f.type) }));
+  const rows = table.toArray().map((r) => {
+    const o = r.toJSON();
+    for (const k in o) if (typeof o[k] === "bigint") o[k] = Number(o[k]);
+    return o;
+  });
+  return { cols, rows };
+}
+const rows = async (sql) => (await q(sql)).rows;
+
+function setStatus(msg, error = false) {
+  const el = $("#status");
+  el.textContent = msg; el.classList.toggle("error", error);
+  el.style.display = msg ? "" : "none";
+}
+
+// ---------- 차트 공통 ----------
+const baseLayout = (extra = {}) => ({
+  paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+  font: { color: css("--text"), family: 'system-ui, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif', size: 12 },
+  margin: { l: 58, r: 16, t: 8, b: 44 },
+  xaxis: { gridcolor: css("--line"), automargin: true },
+  yaxis: { gridcolor: css("--line"), automargin: true },
+  legend: { orientation: "h", y: -0.22 },
+  hovermode: "x unified",
+  ...extra,
+});
+const plot = (id, data, layout) => Plotly.react(id, data, layout, { responsive: true, displayModeBar: false });
+
+// ---------- KPI ----------
+async function renderKpis() {
+  const [last] = await rows(`SELECT strftime(ts,'%Y-%m-%d %H:%M') AS t, CAST(demand_mw AS DOUBLE) AS d,
+                                    CAST(reserve_pct AS DOUBLE) AS r, CAST(reserve_mw AS DOUBLE) AS rm
+                             FROM supply ORDER BY ts DESC LIMIT 1`);
+  const [pk] = await rows(`SELECT CAST(max(demand_mw) AS DOUBLE) AS d, strftime(arg_max(ts, demand_mw),'%H:%M') AS t
+                           FROM supply WHERE strftime(ts,'%Y-%m-%d') = '${state.day}'`);
+  const [span] = await rows(`SELECT count(DISTINCT strftime(ts,'%Y-%m-%d')) AS days, count(*) AS n,
+                                    strftime(min(ts),'%Y-%m-%d') AS a, strftime(max(ts),'%Y-%m-%d') AS b FROM supply`);
+  const cards = [
+    ["가장 최근 수요", `${fmt(last.d / 1000, 1)} GW`, last.t],
+    ["공급예비율", `${fmt(last.r, 1)} %`, `공급예비력 ${fmt(last.rm)} MW`],
+    [`${state.day} 최대수요`, `${fmt(pk.d / 1000, 1)} GW`, `${pk.t} 에 기록`],
+    ["모인 데이터", `${fmt(span.days)}일`, `${fmt(span.n)}행 · ${span.a} ~ ${span.b}`],
+  ];
+  $("#kpis").innerHTML = cards.map(([l, v, n]) =>
+    `<div class="card kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="note">${n}</div></div>`).join("");
+}
+
+// ---------- 차트 ----------
+async function renderDay() {
+  const r = await rows(`SELECT strftime(ts,'%Y-%m-%d %H:%M:%S') AS t, CAST(demand_mw AS DOUBLE) AS demand,
+                               CAST(supply_mw AS DOUBLE) AS supply, CAST(forecast_mw AS DOUBLE) AS forecast
+                        FROM supply WHERE strftime(ts,'%Y-%m-%d') = '${state.day}' ORDER BY ts`);
+  const x = r.map((v) => v.t);
+  plot("c-day", [
+    { x, y: r.map((v) => v.supply), name: "공급능력", mode: "lines", line: { color: css("--muted"), width: 1.5 } },
+    { x, y: r.map((v) => v.forecast), name: "최대예측수요", mode: "lines", line: { color: "#e08a2b", width: 1.5, dash: "dot" } },
+    { x, y: r.map((v) => v.demand), name: "현재수요", mode: "lines", line: { color: css("--accent"), width: 2.5 } },
+  ], baseLayout({ yaxis: { title: "MW", gridcolor: css("--line") } }));
+}
+
+async function renderDaily() {
+  const r = await rows(`SELECT strftime(ts,'%Y-%m-%d') AS d, CAST(max(demand_mw) AS DOUBLE) AS peak,
+                               CAST(min(reserve_pct) AS DOUBLE) AS rmin, count(*) AS n
+                        FROM supply GROUP BY 1 ORDER BY 1`);
+  const x = r.map((v) => v.d);
+  plot("c-daily", [
+    { x, y: r.map((v) => v.peak), name: "최대수요 (MW)", type: "bar",
+      marker: { color: r.map((v) => (v.n >= FULL_DAY_ROWS ? css("--accent") : "#8cc7cc")) } },
+    { x, y: r.map((v) => v.rmin), name: "최저 공급예비율 (%)", type: "scatter", mode: "lines+markers", yaxis: "y2",
+      line: { color: "#e08a2b", width: 2.5 } },
+  ], baseLayout({
+    xaxis: { type: "category", gridcolor: css("--line") },
+    yaxis: { title: "MW", gridcolor: css("--line") },
+    yaxis2: { title: "%", overlaying: "y", side: "right", showgrid: false, rangemode: "tozero" },
+  }));
+}
+
+async function renderHour() {
+  const r = await rows(`SELECT CAST(hour(ts) AS INTEGER) AS h, CAST(avg(demand_mw) AS DOUBLE) AS avg,
+                               CAST(max(demand_mw) AS DOUBLE) AS hi, CAST(min(demand_mw) AS DOUBLE) AS lo
+                        FROM supply GROUP BY 1 ORDER BY 1`);
+  const x = r.map((v) => v.h);
+  plot("c-hour", [
+    { x, y: r.map((v) => v.hi), name: "최대", mode: "lines", line: { color: css("--muted"), width: 1, dash: "dot" } },
+    { x, y: r.map((v) => v.avg), name: "평균", mode: "lines+markers", line: { color: css("--accent"), width: 2.5 } },
+    { x, y: r.map((v) => v.lo), name: "최소", mode: "lines", line: { color: css("--muted"), width: 1, dash: "dot" } },
+  ], baseLayout({ xaxis: { title: "시", dtick: 2, gridcolor: css("--line") }, yaxis: { title: "MW", gridcolor: css("--line") } }));
+}
+
+// ---------- SQL 실습창 ----------
+const PRESETS = {
+  "가장 전기를 많이 쓴 순간 TOP 10": `SELECT strftime(ts, '%Y-%m-%d %H:%M') AS 시각, demand_mw AS 수요_MW, supply_mw AS 공급능력_MW, reserve_pct AS 예비율
+FROM supply
+ORDER BY demand_mw DESC
+LIMIT 10`,
+  "일별 최대·최소 수요와 최대수요 시각": `SELECT strftime(ts, '%Y-%m-%d') AS 날짜,
+       max(demand_mw) AS 최대수요_MW,
+       strftime(arg_max(ts, demand_mw), '%H:%M') AS 최대수요_시각,
+       min(demand_mw) AS 최소수요_MW,
+       count(*) AS 행수
+FROM supply
+GROUP BY 1
+ORDER BY 1 DESC`,
+  "시간대별 평균 수요": `SELECT hour(ts) AS 시, round(avg(demand_mw)) AS 평균수요_MW, max(demand_mw) AS 최대_MW, min(demand_mw) AS 최소_MW
+FROM supply
+GROUP BY 1
+ORDER BY 1`,
+  "공급예비율이 낮았던 순간 TOP 10": `SELECT strftime(ts, '%Y-%m-%d %H:%M') AS 시각, reserve_pct AS 공급예비율, reserve_mw AS 공급예비력_MW, demand_mw AS 수요_MW
+FROM supply
+ORDER BY reserve_pct
+LIMIT 10`,
+  "5분 간격이 비는 곳 찾기 (결측 점검)": `SELECT strftime(prev_ts, '%Y-%m-%d %H:%M') AS 직전_시각,
+       strftime(ts, '%Y-%m-%d %H:%M') AS 다음_시각,
+       date_diff('minute', prev_ts, ts) AS 간격_분
+FROM (SELECT ts, lag(ts) OVER (ORDER BY ts) AS prev_ts FROM supply)
+WHERE date_diff('minute', prev_ts, ts) > 5
+ORDER BY ts`,
+};
+
+function cell(v, type) {
+  if (v === null || v === undefined) return "";
+  if (/^Timestamp/.test(type)) return (v instanceof Date ? v : new Date(Number(v))).toISOString().slice(0, 16).replace("T", " ");
+  if (/^Date/.test(type)) return (v instanceof Date ? v : new Date(Number(v))).toISOString().slice(0, 10);
+  // 연도(2026) 같은 값에 천 단위 쉼표가 붙지 않도록 5자리 이상 정수에만 쉼표를 쓴다
+  if (typeof v === "number") return Number.isInteger(v) ? (Math.abs(v) >= 10000 ? v.toLocaleString("ko-KR") : String(v)) : v.toLocaleString("ko-KR", { maximumFractionDigits: 2 });
+  return String(v);
+}
+
+async function runSql() {
+  const sql = $("#sql").value.trim();
+  if (!sql) return;
+  const t0 = performance.now();
+  try {
+    const { cols, rows: rs } = await q(sql);
+    const shown = rs.slice(0, 500);
+    $("#result").innerHTML = `<div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th>${c.name}</th>`).join("")}</tr></thead><tbody>${
+      shown.map((r) => `<tr>${cols.map((c) => `<td>${cell(r[c.name], c.type)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    $("#runinfo").textContent = `${rs.length.toLocaleString()}행 · ${Math.round(performance.now() - t0)}ms` + (rs.length > 500 ? " (앞 500행만 표시)" : "");
+  } catch (e) {
+    $("#result").innerHTML = `<div class="err"></div>`;
+    $("#result .err").textContent = String(e.message || e);
+    $("#runinfo").textContent = "";
+  }
+}
+
+function setupSql() {
+  $("#presets").innerHTML = Object.keys(PRESETS).map((k) => `<option>${k}</option>`).join("");
+  const load = () => { $("#sql").value = PRESETS[$("#presets").value]; };
+  $("#presets").addEventListener("change", () => { load(); runSql(); });
+  $("#run").addEventListener("click", runSql);
+  $("#sql").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runSql(); } });
+  load(); runSql();
+}
+
+// ---------- 컨트롤 ----------
+async function setupDays() {
+  const days = (await rows(`SELECT DISTINCT strftime(ts,'%Y-%m-%d') AS d FROM supply ORDER BY 1 DESC`)).map((v) => v.d);
+  state.day = days[0];
+  $("#day").innerHTML = days.map((d) => `<option>${d}</option>`).join("");
+  $("#day").addEventListener("change", () => { state.day = $("#day").value; renderDay(); renderKpis(); });
+}
+
+const renderAll = () => Promise.all([renderKpis(), renderDay(), renderDaily(), renderHour()]);
+
+async function showMeta() {
+  try {
+    const m = await (await fetch("data/meta.json", { cache: "no-cache" })).json();
+    $("#meta").textContent = `데이터 수집: ${m.updated_at?.replace("T", " ").slice(0, 16)} · ${m.first_ts?.slice(0, 10)} ~ ${m.last_ts?.replace("T", " ")}`;
+  } catch { /* meta.json이 없어도 대시보드는 동작 */ }
+}
+
+try {
+  if (!(await boot())) {
+    setStatus("아직 수집된 데이터가 없습니다. 저장소의 Actions 탭에서 collect-supply 를 한 번 실행하거나, 내 컴퓨터에서 python scripts/fetch_today.py 를 실행해 주세요.");
+  } else {
+    setStatus("");
+    $("#main").hidden = false;
+    await setupDays();
+    setupSql();
+    await renderAll();
+    showMeta();
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderAll);
+  }
+} catch (e) {
+  console.error(e);
+  setStatus(`불러오지 못했습니다: ${e.message || e}`, true);
+}
+</script>
+</body>
+</html>

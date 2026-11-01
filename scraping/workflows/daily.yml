@@ -1,0 +1,44 @@
+name: daily-supply
+
+# 매일 아침 8시(한국시간)에 전날까지의 전력수급실적을 받아 Parquet에 반영한다.
+# GitHub의 cron은 UTC 기준이라 23:00 UTC = 다음 날 08:00 KST.
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch:   # Actions 탭의 "Run workflow" 버튼으로 수동 실행
+
+permissions:
+  contents: write      # 받은 데이터를 저장소에 커밋하려면 필요
+
+concurrency:
+  group: data-update   # 일별/월별 작업이 동시에 push 하지 않도록 순서대로 실행
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 일별 전력수급실적 받기
+        run: python scripts/fetch_daily.py
+
+      - name: 바뀐 데이터가 있으면 커밋
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/data
+          if git diff --cached --quiet; then
+            echo "변경 없음 - 커밋하지 않습니다."
+            exit 0
+          fi
+          git commit -m "data: 일별 전력수급실적 갱신"
+          git pull --rebase
+          git push
